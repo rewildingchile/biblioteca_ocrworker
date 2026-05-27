@@ -6,14 +6,23 @@ from pathlib import Path
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
-from models.models import Area, GoogleDriveFile,GoogleDriveSyncState
+from models.models import Area, GoogleDriveFile,GoogleDriveSyncState,GoogleDriveFileDocument
 from db.database import SessionLocal
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import select
 from datetime import datetime, UTC 
 from sqlalchemy import delete
 from datetime import datetime, timezone
+ 
+from sqlalchemy import text
+import io
+import pdfplumber
+from pdf2image import convert_from_bytes
+import pytesseract
+from PIL import Image 
 
+ 
+ 
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly"
@@ -33,6 +42,35 @@ def conectar_drive():
     service = build("drive", "v3", credentials=creds)
     print('retornando servicio')
     return service
+
+def extraer_texto_pdf(contenido_pdf_bytes):
+    """Detecta si el PDF es nativo o escaneado y extrae todo el texto."""
+  
+
+    # 1. Intento con pdfplumber (texto nativo)
+    texto_plumber = ""
+    with pdfplumber.open(io.BytesIO(contenido_pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                texto_plumber += page_text + "\n"
+    
+    # Criterio: si tiene al menos 50 caracteres de texto real (sin espacios vacíos)
+    if len(texto_plumber.strip()) > 50:
+        return texto_plumber.strip()  # PDF nativo
+    
+    # 2. Si no, asumimos que es escaneado y aplicamos OCR
+    print("PDF sin texto detectable, aplicando OCR...")
+    texto_ocr = ""
+    # Convertir páginas a imágenes (resolución 300 DPI para buena calidad)
+    imagenes = convert_from_bytes(contenido_pdf_bytes, dpi=300)
+   
+    for i, img in enumerate(imagenes):
+        # Aplicar OCR en español
+        page_text = pytesseract.image_to_string(img, lang='spa')
+        texto_ocr += page_text + "\n"
+    return texto_ocr.strip()
+
 
 def sync_full(
     service,
@@ -125,10 +163,56 @@ def sync_full(
                 )
                 session.add(obj)
                 created = True
+        
+            # --- NUEVO: Procesar PDFs ---
+            if mime == 'application/pdf':
+                    try:
+                        # 1. Descargar contenido del PDF
+                        response = service.files().get_media(fileId=file_id).execute()
+                        
+                    
+                        contenido_bytes = response  # ya es bytes
+        
+                        # Extraer texto (nativo u OCR)
+                        text_content = extraer_texto_pdf(contenido_bytes)
+
+                        # 3. Obtener o crear el documento asociado (OneToOne)
+                        doc_stmt = select(GoogleDriveFileDocument).where(
+                                GoogleDriveFileDocument.drive_file_id == file_id
+                            )
+                        documento = session.execute(doc_stmt).scalar_one_or_none()
+                            
+                        if documento:
+                                documento.text_content = text_content
+                        else:
+                                documento = GoogleDriveFileDocument(
+                                    drive_file_id=file_id,
+                                    text_content=text_content
+                                )
+                                session.add(documento)
+                            
+                        # 4. Actualizar el campo TSVECTOR usando SQL (para búsqueda full-text)
+                        # Se usa to_tsvector con el idioma 'spanish' (cambiar según necesidad)
+                        session.execute(
+                                text("""
+                                    UPDATE google_drive_file_documents
+                                    SET search_vector = to_tsvector('spanish', COALESCE(:texto, ''))
+                                    WHERE drive_file_id = :file_id
+                                """),
+                                {"texto": text_content, "file_id": file_id})
+                            
+                        print(f"Texto extraído de PDF {nombre}: {len(text_content) if text_content else 0} caracteres")
+
+                            
+                    except Exception as e:
+                        print(f"Error procesando PDF {file_id} - {nombre}: {e}")
+                        # Opcional: podrías registrar el error pero continuar la sincronización
+
+    # --- Commit de los cambios (archivo + documento) ---                
             session.commit()
             print("created:", created)
           
-            # recursion
+    # recursion para subcarpetas
             if mime == FOLDER_MIME:
                 sync_full(
                     service=service,
@@ -365,8 +449,8 @@ with SessionLocal() as session:
     try:
         area = session.get(Area, 1)
         print(area.nombre) 
-        #sync_full( service, folder_id, area )
-        sync_changes(service, folder_id, area, session )
+        sync_full( service, folder_id, area )
+        #sync_changes(service, folder_id, area, session )
         
     except OperationalError as e:
 

@@ -94,6 +94,10 @@ class GoogleDriveFile(Base):
 )
 
 
+    document: Mapped[Optional["GoogleDriveFileDocument"]] = relationship(
+        back_populates="file",
+        uselist=False
+    )
 
     # Índices compuestos
     __table_args__ = (
@@ -105,39 +109,6 @@ class GoogleDriveFile(Base):
 
     def __repr__(self) -> str:
         return f"<GoogleDriveFile(name='{self.name}', drive_file_id='{self.drive_file_id}')>"
-    
-class GoogleDriveSyncState(Base):
-    __tablename__ = "google_drive_sync_states"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-
-    area_id: Mapped[int] = mapped_column(
-        ForeignKey("areas.id", ondelete="CASCADE")
-    )
-
-    start_page_token: Mapped[str] = mapped_column(
-        String(255),
-        nullable=False
-    )
-
-    last_full_sync_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime,
-        nullable=True
-    )
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),          # Usa función de la BD
-        onupdate=func.now()                 # Se actualiza automáticamente
-    )
-
-    # Relación muchos a uno con Area
-    area: Mapped["Area"] = relationship(
-        back_populates="sync_states"
-    )
-
-    def __repr__(self) -> str:
-        return f"<GoogleDriveSyncState(area_id={self.area_id}, start_page_token='{self.start_page_token}')>"
     
 from sqlalchemy import String, ForeignKey, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -180,3 +151,39 @@ class GoogleDriveFileDocument(Base):
 
     def __repr__(self) -> str:
         return f"<GoogleDriveFileDocument(drive_file_id='{self.drive_file_id}')>"
+    
+
+    
+class GoogleDriveSyncState(Base):
+    __tablename__ = "google_drive_sync_states"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    area_id: Mapped[int] = mapped_column(
+        ForeignKey("areas.id", ondelete="CASCADE")
+    )
+
+    start_page_token: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False
+    )
+
+    last_full_sync_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime,
+        nullable=True
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),          # Usa función de la BD
+        onupdate=func.now()                 # Se actualiza automáticamente
+    )
+
+    # Relación muchos a uno con Area
+    area: Mapped["Area"] = relationship(
+        back_populates="sync_states"
+    )
+
+    def __repr__(self) -> str:
+        return f"<GoogleDriveSyncState(area_id={self.area_id}, start_page_token='{self.start_page_token}')>"
+    
